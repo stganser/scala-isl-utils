@@ -620,6 +620,27 @@ object Isl {
     return constr
   }
 
+  def constructHappensBeforeMap(domain : isl.UnionSet, sched : isl.UnionMap) : isl.UnionMap = {
+    val stmts : Predef.Set[String] = Isl.islUnionSetGetTupleNames(domain)
+    var result : isl.UnionMap = isl.UnionMap.empty(sched.getSpace)
+    for (s1 : String <- stmts) {
+      for (s2 : String <- stmts) {
+        val sched1 : isl.Map = isl.Map.fromUnionMap(Isl.islUnionMapFilter(sched, Predef.Set(s1)))
+        val sched2 : isl.Map = isl.Map.fromUnionMap(Isl.islUnionMapFilter(sched, Predef.Set(s2)))
+        val dom1 : isl.Set = isl.Set.fromUnionSet(Isl.islUnionSetFilter(domain, Predef.Set(s1)))
+        val dom2 : isl.Set = isl.Set.fromUnionSet(Isl.islUnionSetFilter(domain, Predef.Set(s2)))
+        val m : isl.Map = constructHappensBeforeMap(dom1, dom2, sched1, sched2)
+        result = result.addMap(m)
+      }
+    }
+    return result
+  }
+
+  private def constructHappensBeforeMap(dom1 : isl.Set, dom2 : isl.Set, sched1 : isl.Map, sched2 : isl.Map) : isl.Map = {
+    val result : isl.Map = isl.Map.fromDomainAndRange(dom1, dom2)
+    return result.addConstraint(Isl.buildHappensBeforeConstrFromMaps(dom1, dom2, sched1, sched2))
+  }
+
   /**
     * Two elements x from {@code dom1} and y from {@code dom2} are in relation iff {@code m1(x) < m2(y)}. The resulting
     * constraint reduces the cross-product of {@code dom1} and {@code dom2} to this relation. {@code m1} and {@code m2}
