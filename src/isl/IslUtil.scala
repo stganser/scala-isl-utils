@@ -138,6 +138,7 @@ object Isl {
       .getAbsolutePath, (sStr.length() + 1).toString)
     barvinokPb.environment().put("LD_LIBRARY_PATH", barvinokLibraryPath
       .getAbsolutePath)
+    barvinokPb.environment().remove("LD_PRELOAD")
     val barvinok : Process = try {
       barvinokPb.start()
     } catch {
@@ -225,7 +226,25 @@ object Isl {
     * Check whether the given {@code isl.UnionMap} wraps a nested map.
     */
   def islUnionMapRangeIsWrapping(m : isl.UnionMap) : Boolean = {
-    return m.sample().rangeIsWrapping()
+    var anyIsWrapping : Boolean = false
+    m.foreachMap((mm : isl.Map) => {
+      if (mm.rangeIsWrapping())
+        anyIsWrapping = true
+    })
+    return anyIsWrapping
+  }
+
+  def islSetIsWrapping(s : isl.Set) : Boolean = {
+    return s.isWrapping()
+  }
+
+  def islUnionSetIsWrapping(s : isl.UnionSet) : Boolean = {
+    var anyIsWrapping : Boolean = false
+    s.foreachSet((ss : isl.Set) => {
+      if (ss.isWrapping())
+        anyIsWrapping = true
+    })
+    return anyIsWrapping
   }
 
   /**
@@ -289,6 +308,20 @@ object Isl {
   def buildMultiDimUnionMap(maps : List[isl.UnionMap]) : isl.UnionMap = {
     if (maps.isEmpty)
       throw new IllegalArgumentException("maps must not be empty.")
+    return buildMultiDimUnionMap(maps, null)
+  }
+
+  /**
+    * Takes a list of single-dimensional Isl union maps and combines them into
+    * one multi-dimensional union map. The single union maps must have similar
+    * structure. Each tuple name must occur at most once in each union map.
+    * Otherwise the result produced by this method is incorrect.
+    * @param sp The space of the resulting union map.
+    * @return If the list of maps is empty, the result is an empty union map in {@code sp}.
+    */
+  def buildMultiDimUnionMap(maps : List[isl.UnionMap], sp : isl.Space) : isl.UnionMap = {
+    if (maps.isEmpty)
+      return isl.UnionMap.empty(sp)
 
     // separate the maps in each dimension
     val mapLists : List[List[isl.Map]] = maps.map(splitUnionMap)
@@ -358,9 +391,23 @@ object Isl {
   }
 
   /**
+    * Convert a given {@code isl.PwAff} that consists of a single piece into an {@code isl.Aff}.
+    * @throws IllegalArgumentException Thrown if the given {@code isl.PwAff} not exactly one piece.
+    */
+  def pwAff2Aff(pAff : isl.PwAff) : isl.Aff = {
+    if (pAff.nPiece() != 1)
+      throw new IllegalArgumentException("the given piecewise affine expression does not consist of exactly one piece: " + pAff)
+    var piece : isl.Aff = null
+    pAff.foreachPiece((_ : isl.Set, p : isl.Aff) => {
+      piece = p
+    })
+    return piece
+  }
+
+  /**
     * Splits {@code m} into a list of basic maps.  Coalesces the basic maps.
     */
-  
+
   def splitMap(m : isl.Map) : List[isl.BasicMap] = {
     var result : List[isl.BasicMap] = List.empty
     m.coalesce.foreachBasicMap((m1 : isl.BasicMap) => {
@@ -368,7 +415,7 @@ object Isl {
     })
     return result
   }
-  
+
   /**
     * Splits {@code m} into a list of maps.
     */
@@ -379,7 +426,7 @@ object Isl {
     })
     return result
   }
-  
+
   /**
     * Splits {@code m} into a list of basic maps.
     */
@@ -412,7 +459,7 @@ object Isl {
     })
     return result
   }
-  
+
   /**
     * Splits {@code s} into a list of sets.
     */
@@ -705,6 +752,27 @@ object Isl {
     return bMap
   }
 
+  /**
+    * If a set contains only one basic set it can be transformed into a basic set.
+    */
+  def islBasicSetFromSet(s : Set) : isl.BasicSet = {
+    var bSet : isl.BasicSet = null
+    var nBSets : Int = 0
+
+    s.foreachBasicSet((bs : isl.BasicSet) => {
+      if (nBSets > 0)
+        throw new IllegalArgumentException("s contains more than one basic set: " + s)
+      nBSets += 1
+      bSet = bs
+    })
+    return bSet
+  }
+
+  def islSetGetParamNames(s : isl.UnionSet) : scala.collection.immutable.Set[String] = {
+    val context : isl.Set = s.params()
+    return (for (i : Int <- 0 until context.dim(T_PAR)) yield context.getDimName(T_PAR, i)).toSet
+  }
+
   def islUnionMapRemoveDivs(m : isl.UnionMap) : isl.UnionMap = {
     var result : isl.UnionMap = isl.UnionMap.empty(m.getSpace)
     m.foreachMap((mm : isl.Map) => {
@@ -712,14 +780,47 @@ object Isl {
     })
     return result
   }
-  
+
   /**
-   * Check whether input dimension {@code dim} is constant.
-   */
+    * Check whether input dimension {@code dim} is constant.
+    */
   def isConstInputDim(m : isl.Map, dim : Int) : Boolean = {
     var domain : isl.Set = m.domain()
     domain = domain.projectOut(T_SET, 0, dim)
     domain = domain.projectOut(T_SET, 1, domain.dim(T_SET) - 1)
     return domain.isSingleton()
+  }
+
+  /**
+    * Project the given set onto the given set-dimension.
+    */
+  def islSetProjectOntoDim(s : isl.Set, dim : Int) : isl.Set = {
+    val nDim : Int = s.dim(T_SET)
+    if (dim < 0 || dim >= nDim)
+      throw new IllegalArgumentException(f"${dim} is not a dimension of ${s}.")
+    var result : isl.Set = s
+    result = result.projectOut(T_SET, 0, dim).removeRedundancies()
+    result = result.projectOut(T_SET, 1, result.dim(T_SET) - 1).removeRedundancies()
+    return result
+  }
+
+  def islUnionMapUniqueToString(m : isl.UnionMap) : String = {
+    if (islUnionMapRangeIsWrapping(m))
+      throw new IllegalArgumentException("Cannot handle wrapped maps: " + m)
+    val mStr : String = m.toString.trim()
+    val params : String = mStr.replaceFirst("\\{.*", "")
+    val relationsStr : String = mStr.replaceFirst(".*\\{", "").replaceFirst("\\}$", "").trim()
+    val relations : Array[String] = relationsStr.split(";").map(_.trim()).sorted
+    return params + "{ " + relations.mkString("; ") + " }"
+  }
+
+  def islUnionSetUniqueToString(s : isl.UnionSet) : String = {
+    if (islUnionSetIsWrapping(s))
+      throw new IllegalArgumentException("Cannot handle wrapping sets: " + s)
+    val sStr : String = s.toString.trim()
+    val params : String = sStr.replaceFirst("\\{.*", "")
+    val setsStr : String = sStr.replaceFirst(".*\\{", "").replaceFirst("\\}$", "").trim()
+    val sets : Array[String] = setsStr.split(";").map(_.trim()).sorted
+    return params + "{ " + sets.mkString("; ") + " }"
   }
 }
